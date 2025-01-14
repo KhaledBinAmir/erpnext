@@ -85,52 +85,55 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 	}
 
 	update_table(data) {
-		return new Promise((resolve, reject) => {
-			let cur_grid = this.frm.fields_dict[this.items_table_name].grid;
-			frappe.flags.trigger_from_barcode_scanner = true;
-
-			const { item_code, barcode, batch_no, serial_no, uom } = data;
-
-			let row = this.get_row_to_modify_on_scan(item_code, batch_no, uom, barcode);
-
-			this.is_new_row = false;
-			if (!row) {
-				if (this.dont_allow_new_row) {
-					this.show_alert(__("Maximum quantity scanned for item {0}.", [item_code]), "red");
-					this.clean_up();
-					reject();
-					return;
-				}
-				this.is_new_row = true;
-
-				// add new row if new item/batch is scanned
-				row = frappe.model.add_child(this.frm.doc, cur_grid.doctype, this.items_table_name);
-				// trigger any row add triggers defined on child table.
-				this.frm.script_manager.trigger(`${this.items_table_name}_add`, row.doctype, row.name);
-				this.frm.has_items = false;
-			}
-
-			if (this.is_duplicate_serial_no(row, serial_no)) {
-				this.clean_up();
-				reject();
-				return;
-			}
-
-			frappe.run_serially([
-				() => this.set_selector_trigger_flag(data),
-				() =>
-					this.set_item(row, item_code, barcode, batch_no, serial_no).then((qty) => {
-						this.show_scan_message(row.idx, row.item_code, qty);
-					}),
-				() => this.set_barcode_uom(row, uom),
-				() => this.set_serial_no(row, serial_no),
-				() => this.set_batch_no(row, batch_no),
-				() => this.set_barcode(row, barcode),
-				() => this.clean_up(),
-				() => this.revert_selector_flag(),
-				() => resolve(row),
-			]);
-		});
+	    return new Promise((resolve, reject) => {
+	        let cur_grid = this.frm.fields_dict[this.items_table_name].grid;
+	        frappe.flags.trigger_from_barcode_scanner = true;
+	
+	        const { item_code, barcode, batch_no, serial_no, uom } = data;
+	
+	        let row = this.get_row_to_modify_on_scan(item_code, batch_no, uom, barcode);
+	
+	        this.is_new_row = false;
+	        if (!row) {
+	            if (this.dont_allow_new_row) {
+	                this.show_alert(__("Maximum quantity scanned for item {0}.", [item_code]), "red");
+	                this.clean_up();
+	                reject();
+	                return;
+	            }
+	            this.is_new_row = true;
+	
+	            // Add a new row if no match is found
+	            row = frappe.model.add_child(this.frm.doc, cur_grid.doctype, this.items_table_name);
+	            this.frm.script_manager.trigger(`${this.items_table_name}_add`, row.doctype, row.name);
+	            this.frm.has_items = false;
+	        }
+	
+	        if (this.is_duplicate_serial_no(row, serial_no)) {
+	            this.clean_up();
+	            reject();
+	            return;
+	        }
+	
+	        frappe.run_serially([
+	            () => this.set_selector_trigger_flag(data),
+	            () =>
+	                this.set_item(row, item_code, barcode, batch_no, serial_no).then((qty) => {
+	                    if (!this.is_new_row) {
+	                        qty += flt(row[this.qty_field]);
+	                        frappe.model.set_value(row.doctype, row.name, this.qty_field, qty);
+	                    }
+	                    this.show_scan_message(row.idx, row.item_code, qty);
+	                }),
+	            () => this.set_barcode_uom(row, uom),
+	            () => this.set_serial_no(row, serial_no),
+	            () => this.set_batch_no(row, batch_no),
+	            () => this.set_barcode(row, barcode),
+	            () => this.clean_up(),
+	            () => this.revert_selector_flag(),
+	            () => resolve(row),
+	        ]);
+	    });
 	}
 
 	// batch and serial selector is reduandant when all info can be added by scan
@@ -405,29 +408,28 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 	}
 
 	get_row_to_modify_on_scan(item_code, batch_no, uom, barcode) {
-		let cur_grid = this.frm.fields_dict[this.items_table_name].grid;
-
-		// Check if batch is scanned and table has batch no field
-		let is_batch_no_scan = batch_no && frappe.meta.has_field(cur_grid.doctype, this.batch_no_field);
-		let check_max_qty = this.max_qty_field && frappe.meta.has_field(cur_grid.doctype, this.max_qty_field);
-
-		const matching_row = (row) => {
-			const item_match = row.item_code == item_code;
-			const batch_match = !row[this.batch_no_field] || row[this.batch_no_field] == batch_no;
-			const uom_match = !uom || row[this.uom_field] == uom;
-			const qty_in_limit = flt(row[this.qty_field]) < flt(row[this.max_qty_field]);
-			const item_scanned = row.has_item_scanned;
-
-			return (
-				item_match &&
-				uom_match &&
-				!item_scanned &&
-				(!is_batch_no_scan || batch_match) &&
-				(!check_max_qty || qty_in_limit)
-			);
-		};
-
-		return this.items_table.find(matching_row) || this.get_existing_blank_row();
+	    let cur_grid = this.frm.fields_dict[this.items_table_name].grid;
+	
+	    // Check if batch is scanned and table has batch no field
+	    let is_batch_no_scan = batch_no && frappe.meta.has_field(cur_grid.doctype, this.batch_no_field);
+	    let check_max_qty = this.max_qty_field && frappe.meta.has_field(cur_grid.doctype, this.max_qty_field);
+	
+	    const matching_row = (row) => {
+	        const item_match = row.item_code == item_code;
+	        const batch_match = !row[this.batch_no_field] || row[this.batch_no_field] == batch_no;
+	        const uom_match = !uom || row[this.uom_field] == uom;
+	        const qty_in_limit = flt(row[this.qty_field]) < flt(row[this.max_qty_field]);
+	
+	        return (
+	            item_match &&
+	            uom_match &&
+	            (!is_batch_no_scan || batch_match) &&
+	            (!check_max_qty || qty_in_limit)
+	        );
+	    };
+	
+	    // Find the first matching row for the item_code
+	    return this.items_table.find(matching_row) || this.get_existing_blank_row();
 	}
 
 	get_existing_blank_row() {
